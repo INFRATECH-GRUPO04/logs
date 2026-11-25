@@ -8,9 +8,12 @@ public class DatabaseConfig {
 
     public DatabaseConfig() {
         BasicDataSource dataSource = new BasicDataSource();
-        dataSource.setUrl("jdbc:mysql://nome-do-container-mysql:3306/infratech");
-        dataSource.setUsername("aluno");
-        dataSource.setPassword("A");
+        dataSource.setUrl("jdbc:mysql://"
+                + System.getenv().getOrDefault("DB_HOST", "nome-do-container-mysql")
+                + ":3306/"
+                + System.getenv().getOrDefault("DB_DATABASE", "infratech"));
+        dataSource.setUsername(System.getenv().getOrDefault("DB_USER", "aluno"));
+        dataSource.setPassword(System.getenv().getOrDefault("DB_PASSWORD", ""));
 
         this.jdbcTemplate = new JdbcTemplate(dataSource);
     }

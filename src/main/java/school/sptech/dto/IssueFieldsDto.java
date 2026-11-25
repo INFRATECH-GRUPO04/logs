@@ -1,5 +1,7 @@
 package school.sptech.dto;
 
+import java.util.List;
+
 // DTO: representa os campos enviados para a criação de uma Issue no Jira.
 // Agrupa os campos do ticket:
 public class IssueFieldsDto {
@@ -9,6 +11,7 @@ public class IssueFieldsDto {
     private IssueTypeDto issuetype;
     private String description;
     private PriorityDto priority;
+    private List<String> labels;
 
     public IssueFieldsDto() {
     }
@@ -18,13 +21,15 @@ public class IssueFieldsDto {
             String summary,
             IssueTypeDto issuetype,
             String description,
-            PriorityDto priority
+            PriorityDto priority,
+            List<String> labels
     ) {
         this.project = project;
         this.summary = summary;
         this.issuetype = issuetype;
         this.description = description;
         this.priority = priority;
+        this.labels = labels;
     }
 
     public ProjectDto getProject() {
@@ -65,5 +70,13 @@ public class IssueFieldsDto {
 
     public void setPriority(PriorityDto priority) {
         this.priority = priority;
+    }
+
+    public List<String> getLabels() {
+        return labels;
+    }
+
+    public void setLabels(List<String> labels) {
+        this.labels = labels;
     }
 }

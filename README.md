@@ -152,3 +152,154 @@ Neste exemplo, elas são tratadas em um bloco `try-catch`.
 - [Documentação da API REST do Jira Cloud](https://developer.atlassian.com/cloud/jira/platform/rest/v3/)
 - [Autenticação no Jira Cloud](https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/)
 - [Criando Tokens de API](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
+
+## 📄 CSVs da silver (entrada dos alertas)
+
+Não existe mais `latest.json`. A aplicação Java lê **diretamente os CSVs da camada silver**
+(`02-silver/metricas/`, configurável em `S3_SILVER_PREFIX`). Cada servidor tem uma pasta por dia:
+
+```text
+02-silver/metricas/empresa_id=2/servidor_id=3/data=2026-11-24/20261124T224100Z_empresa-2_servidor-3_dados.csv
+```
+
+- Só arquivos `_dados.csv` são lidos; a silver não recebe `_processos.csv`.
+- Só as partições `data=` de **hoje e ontem** (fuso de Brasília) são consideradas: o resto já
+  estaria fora da janela de alerta.
+- `empresa_id` e `servidor_id` são os ids do MySQL. O lote no nome do arquivo
+  (`YYYYMMDDTHHMMSSZ`) é gerado no fuso de **Brasília**: o `Z` é enganoso, não é UTC.
+- Um lote que cruza a meia-noite gera dois arquivos, com o mesmo lote e partições `data=` diferentes.
+- O cabeçalho é o mesmo do agente:
+  `id_empresa,id_servidor,username,data_hora,cpu,inte_cpu,ram_disponivel,ram_total,ram,disco,disco_disponivel,disco_total,bytes_enviados,bytes_recebidos,pacotes_enviados,pacotes_recebidos,trocas_contexto,temperatura_cpu,tempo_escrita_disco`.
+- `data_hora` é a hora local de Brasília (`AAAA-MM-DD HH:MM:SS`), sem offset.
+- `cpu`, `ram` e `disco` são percentuais. Campos faltando, vazios ou não numéricos viram
+  "sem dados" — nunca zero.
+- `bytes_enviados` e `bytes_recebidos` são **contadores cumulativos**. O Java calcula
+  `Mbps = (bytes[t] - bytes[t-1]) / Δt * 8 / 1e6`, com o `Δt` real dos `data_hora` e delta
+  negativo tratado como 0. O primeiro registro do lote usa a última linha do lote anterior.
+- O tráfego de rede é somado por empresa (upload + download) e vira um chamado identificado
+  apenas pela empresa, sem `servidor-{id}`.
+
+## 🏷️ Labels enviadas ao Jira
+
+Todo chamado sai com:
+
+- `empresa-{id}` — usada pelo back-end do site para filtrar pela empresa logada;
+- `servidor-{id}` — exceto no chamado de rede agregada;
+- `componente-{cpu|ram|disco|rede}`;
+- `severidade-{critico|atencao}`.
+
+O título também repete os ids (`[EMP-2][SRV-9]`) e a descrição traz empresa, servidor,
+média das amostras, limite, a leitura mais recente, a janela avaliada e quantas amostras
+ficaram acima do limite.
+
+O chamado só é criado quando a **média** das amostras da janela passa do limite escolhido
+(`CRÍTICO` ou `ATENÇÃO`) e **7 de 10** amostras ficam acima dele — não precisam ser
+consecutivas. A janela é de 10 minutos, contada a partir da leitura mais recente. Se já existir
+chamado aberto com as mesmas labels, nada é criado de novo.
+
+## ⚙️ Configuração por variável de ambiente
+
+As variáveis são lidas do ambiente do processo (ou do `--env-file` do Docker). O modelo está em
+`.env.example`; copie, preencha e **nunca** commite o arquivo com os segredos.
+
+| Variável | Padrão no código | Obrigatória? | Uso |
+|---|---|---|---|
+| `S3_BUCKET` | `teste-integracao-java` | não | bucket onde está a camada silver (use `s3-infratech-prod` no teste local) |
+| `S3_SILVER_PREFIX` | `02-silver/metricas/` | não | prefixo dos CSVs da silver |
+| `JIRA_PROJECT` | `IFT` | não | projeto Jira — precisa ser igual ao `JIRA_PROJECT` do site |
+| `JIRA_BASE_URL` | `https://sptech-infratech.atlassian.net` | não | URL base do Jira Cloud |
+| `JIRA_EMAIL` | `felipe.msantos@sptech.school` | não | e-mail da conta que autentica na API |
+| `JIRA_TOKEN` | `""` | **sim (segredo)** | token de API do Jira; sem ele a rodada é abortada |
+| `SLACK_WEBHOOK` | `""` | **sim (segredo)** | webhook do canal; vazio = só cria no Jira e avisa no log |
+| `DB_HOST` | `nome-do-container-mysql` | não | host/nome do container MySQL na rede Docker |
+| `DB_DATABASE` | `infratech` | não | nome do banco |
+| `DB_USER` | `aluno` | não | usuário do banco |
+| `DB_PASSWORD` | `""` | **sim (segredo)** | senha do banco |
+| `ALERTA_INTERVALO_SEGUNDOS` | `300` | não | intervalo entre rodadas do loop (mínimo 10) |
+| `ALERTA_JANELA_MINUTOS` | `10` | não | janela avaliada, contada a partir da leitura mais recente |
+| `ALERTA_MIN_AMOSTRAS` | `7` | não | amostras acima do limite para confirmar o chamado |
+| `ALERTA_MAX_IDADE_MINUTOS` | `15` | não | sem dados novos por mais que isso: aviso no log, sem chamado |
+
+`JIRA_TOKEN`, `SLACK_WEBHOOK` e `DB_PASSWORD` não têm valor padrão válido: são segredos e precisam
+ser fornecidos em tempo de execução. A porta do MySQL continua fixa em `3306`.
+
+### 🔁 Como a aplicação roda
+
+O `main` cria as conexões (Jira, Slack, MySQL e S3) **uma vez** e entra em um loop: processa uma
+rodada, dorme `ALERTA_INTERVALO_SEGUNDOS` e repete. Cada rodada lista a silver de forma paginada
+e só baixa o lote mais recente de cada servidor (mais o anterior, para o primeiro delta de rede).
+O watermark é **por empresa/servidor**, em memória, usando o lote do nome do arquivo: sem lote
+novo, nenhum `GET` é feito. Um lote novo de um servidor não é ignorado por causa do lote mais novo
+de outro. O container não usa `--restart`: se parar, não volta sozinho.
+
+## 🏗️ Build do jar executável
+
+```bash
+mvn package
+```
+
+O `maven-shade-plugin` gera um **jar gordo** (com todas as dependências e `Main-Class`) em
+`target/java-jira-integration-1.0-SNAPSHOT.jar`. É esse arquivo que o Dockerfile copia.
+
+## 🐳 Imagem Docker e deploy na EC2
+
+Build local e push no DockerHub (repositório **público**, sem segredos embutidos):
+
+```bash
+docker build -t seuusuario/infratech-alertas:1.0 .
+docker tag seuusuario/infratech-alertas:1.0 seuusuario/infratech-alertas:latest
+docker push seuusuario/infratech-alertas:1.0
+docker push seuusuario/infratech-alertas:latest
+```
+
+Na EC2 (uma única vez, criar a rede e o arquivo de ambiente):
+
+```bash
+docker network create infratech-net
+sudo mkdir -p /opt/infratech
+sudo tee /opt/infratech/alertas.env >/dev/null <<'EOF'
+S3_BUCKET=s3-infratech-prod
+S3_SILVER_PREFIX=02-silver/metricas/
+JIRA_PROJECT=IFT
+JIRA_BASE_URL=https://sptech-infratech.atlassian.net
+JIRA_EMAIL=...
+JIRA_TOKEN=...
+SLACK_WEBHOOK=...
+DB_HOST=nome-do-container-mysql
+DB_DATABASE=infratech
+DB_USER=aluno
+DB_PASSWORD=...
+ALERTA_INTERVALO_SEGUNDOS=300
+ALERTA_JANELA_MINUTOS=10
+ALERTA_MIN_AMOSTRAS=7
+ALERTA_MAX_IDADE_MINUTOS=15
+EOF
+sudo chmod 600 /opt/infratech/alertas.env
+```
+
+O MySQL precisa estar na mesma rede (`infratech-net`) e o `DB_HOST` deve casar com o nome/alias do
+container. Para subir/atualizar:
+
+```bash
+docker pull seuusuario/infratech-alertas:1.0
+docker run -d --name infratech-alertas --network infratech-net \
+  --env-file /opt/infratech/alertas.env \
+  seuusuario/infratech-alertas:1.0
+
+docker logs -f infratech-alertas
+```
+
+### ⚠️ Pré-requisitos e armadilhas
+
+- **A role da EC2 precisa de `s3:ListBucket`** no bucket, com prefixo `02-silver/metricas*`,
+  além de `s3:GetObject` em `02-silver/metricas/*`. Sem `ListBucket` a aplicação não descobre
+  os lotes.
+- As credenciais da AWS vêm da **IAM Role da EC2** (IMDSv2). Em container, a instância precisa de
+  `HttpPutResponseHopLimit >= 2`, senão o SDK não alcança o `169.254.169.254`.
+- A região do S3 é fixa em `US_EAST_1` no código.
+- Chamados antigos (criados antes das labels) não aparecem no filtro da dashboard; os novos
+  começam já com `empresa-{id}`.
+- Se a leitura mais recente ficar com mais de `ALERTA_MAX_IDADE_MINUTOS` (15 min) em relação ao
+  relógio da máquina, a rodada só registra um aviso e **não** cria chamado. Mantenha NTP ativo.
+- O `Z` no nome do lote não é UTC: é horário de Brasília. Um lote que cruza a meia-noite vira
+  dois arquivos e os dois são lidos juntos.

@@ -1,14 +1,17 @@
 package school.sptech.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import school.sptech.dto.IssueFieldsDto;
 import school.sptech.dto.IssueRequestDto;
 import school.sptech.dto.IssueTypeDto;
@@ -46,7 +49,8 @@ public class Jira {
             String summary,
             String description,
             String issueType,
-            String priority
+            String priority,
+            List<String> labels
     ) throws IOException, InterruptedException {
 
         // Monta o corpo da requisição usando os DTOs
@@ -59,7 +63,8 @@ public class Jira {
                 summary,
                 type,
                 description,
-                priorityDto
+                priorityDto,
+                labels
         );
 
         IssueRequestDto issueRequest = new IssueRequestDto(fields);
@@ -87,5 +92,44 @@ public class Jira {
         }
 
         throw new RuntimeException("Jira request failed: " + status + " - " + response.body());
+    }
+
+    // Serve para não criar dois chamados para a mesma alta: procura uma issue aberta
+    // com as labels da empresa, do servidor e do componente.
+    // A busca é fail-open: se der qualquer erro, devolve false e o chamado é criado mesmo assim.
+    public boolean existeChamadoAberto(String projectKey, List<String> labels) {
+        try {
+            StringBuilder jql = new StringBuilder("project = \"").append(projectKey).append("\"");
+            for (String label : labels) {
+                jql.append(" AND labels = \"").append(label).append("\"");
+            }
+            jql.append(" AND statusCategory != Done");
+
+            String url = baseUrl + "/rest/api/3/search/jql?jql="
+                    + URLEncoder.encode(jql.toString(), StandardCharsets.UTF_8)
+                    + "&maxResults=1&fields=key";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(60))
+                    .header("Authorization", authHeader)
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            int status = response.statusCode();
+            if (status < 200 || status >= 300) {
+                throw new RuntimeException("Jira search failed: " + status + " - " + response.body());
+            }
+
+            JsonNode issues = objectMapper.readTree(response.body()).path("issues");
+            return issues.isArray() && !issues.isEmpty();
+        } catch (Exception e) {
+            System.err.println("Aviso: não foi possível consultar chamados abertos no Jira: "
+                    + e.getMessage() + ". Vai criar o chamado mesmo assim.");
+            return false;
+        }
     }
 }

@@ -8,12 +8,12 @@ import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.S3Object;
 import java.util.List;
-import java.util.stream.Collectors;
 
 // S3Service -> aplica as operações relacionadas ao bucket
 
@@ -26,26 +26,30 @@ public class S3Service {
         this.s3Client = s3Client;
     }
 
+    // Lista TODAS as chaves do prefixo, página por página. Sem paginação a lista fica
+    // incompleta quando o data lake passa de mil arquivos.
     public List<String> listarArquivos(String bucketName, String prefixo) {
+        List<String> chaves = new ArrayList<>();
         ListObjectsV2Request request = ListObjectsV2Request.builder()
                 .bucket(bucketName)
                 .prefix(prefixo)
                 .build();
 
-        ListObjectsV2Response response = s3Client.listObjectsV2(request);
-
-        return response.contents().stream()
-                .map(S3Object::key)
-                .collect(Collectors.toList());
+        for (ListObjectsV2Response pagina : s3Client.listObjectsV2Paginator(request)) {
+            for (S3Object objeto : pagina.contents()) {
+                chaves.add(objeto.key());
+            }
+        }
+        return chaves;
     }
 
-    public String lerArquivoGold(String bucketName, String key) {
+    public String lerArquivo(String bucketName, String key) {
         GetObjectRequest request = GetObjectRequest.builder()
                 .bucket(bucketName)
-                .key(key) //caminho do json
+                .key(key) //caminho do arquivo no S3
                 .build();
 
-        // baixa os dados do json:
+        // baixa os dados do arquivo:
         try (ResponseInputStream<GetObjectResponse> stream = s3Client.getObject(request);
              BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
 

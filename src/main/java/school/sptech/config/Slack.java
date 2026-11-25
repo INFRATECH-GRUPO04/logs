@@ -41,6 +41,12 @@ public class Slack {
     public void sendMessage(String message)
             throws IOException, InterruptedException {
 
+        // Sem webhook configurado, não há para onde enviar: só avisa no log.
+        if (webhookUrl == null || webhookUrl.isBlank()) {
+            System.out.println("Slack não configurado; mensagem ignorada (chamado no Jira foi criado).");
+            return;
+        }
+
         // Cria o corpo da requisição.
         // O Slack espera receber um JSON contendo "text".
         Map<String, Object> body = new HashMap<>();
@@ -59,9 +65,15 @@ public class Slack {
             String issueKey,
             String summary,
             String issueType,
-            String issueUrl
+            String issueUrl,
+            String contexto
     ) throws IOException, InterruptedException {
 
+        // Sem webhook configurado, não há para onde enviar: só avisa no log.
+        if (webhookUrl == null || webhookUrl.isBlank()) {
+            System.out.println("Slack não configurado; mensagem ignorada (chamado no Jira foi criado).");
+            return;
+        }
 
         // texto que aparecerá no cabeçalho da mensagem.
         Map<String, Object> headerText = Map.of(
@@ -83,7 +95,8 @@ public class Slack {
                 "text",
                 "*Issue:* `" + issueKey + "`\n" +
                         "*Título:* " + summary + "\n" +
-                        "*Tipo:* " + issueType
+                        "*Tipo:* " + issueType + "\n" +
+                        "*Contexto:* " + contexto
         );
 
         // Define que essas informações serão exibida dentro de um bloco do Slack do tipo "section"
