@@ -199,13 +199,15 @@ chamado aberto com as mesmas labels, nada é criado de novo.
 
 ## ⚙️ Configuração por variável de ambiente
 
-As variáveis são lidas do ambiente do processo (ou do `--env-file` do Docker). O modelo está em
-`.env.example`; copie, preencha e **nunca** commite o arquivo com os segredos.
+As variáveis são lidas do ambiente do processo (via `env_file` do compose ou `--env-file` do
+Docker). O modelo está em `.env.example`; copie, preencha e **nunca** commite o arquivo com os
+segredos. As credenciais AWS são opcionais: sem elas, o SDK usa a IAM Role da EC2.
 
 | Variável | Padrão no código | Obrigatória? | Uso |
 |---|---|---|---|
 | `S3_BUCKET` | `teste-integracao-java` | não | bucket onde está a camada silver (use `s3-infratech-prod` no teste local) |
 | `S3_SILVER_PREFIX` | `02-silver/metricas/` | não | prefixo dos CSVs da silver |
+| `AWS_REGION` | `us-east-1` | não | região do S3 (aceita `AWS_DEFAULT_REGION` no boto3) |
 | `JIRA_PROJECT` | `IFT` | não | projeto Jira — precisa ser igual ao `JIRA_PROJECT` do site |
 | `JIRA_BASE_URL` | `https://sptech-infratech.atlassian.net` | não | URL base do Jira Cloud |
 | `JIRA_EMAIL` | `felipe.msantos@sptech.school` | não | e-mail da conta que autentica na API |
@@ -247,47 +249,52 @@ Build local e push no DockerHub (repositório **público**, sem segredos embutid
 
 ```bash
 docker build -t seuusuario/infratech-alertas:1.0 .
-docker tag seuusuario/infratech-alertas:1.0 seuusuario/infratech-alertas:latest
 docker push seuusuario/infratech-alertas:1.0
-docker push seuusuario/infratech-alertas:latest
 ```
 
-Na EC2 (uma única vez, criar a rede e o arquivo de ambiente):
+O compose com MySQL, site e alertas está no repositório do site, em
+`deploy/docker-compose.yml`. Ele usa um único arquivo de ambiente compartilhado:
+`/opt/infratech/infratech.env` (cópia local: `deploy/infratech.env`). O `DB_HOST`
+é `mysql`, o nome do serviço na rede do compose.
+
+Na EC2 (uma única vez, criar o arquivo de ambiente com o conteúdo documentado no
+README do site):
 
 ```bash
-docker network create infratech-net
 sudo mkdir -p /opt/infratech
-sudo tee /opt/infratech/alertas.env >/dev/null <<'EOF'
+sudo tee /opt/infratech/infratech.env >/dev/null <<'EOF'
+AMBIENTE_PROCESSO=producao
+DB_HOST=mysql
+DB_DATABASE=infratech
+DB_USER=infratech_app
+DB_PASSWORD=...
 S3_BUCKET=s3-infratech-prod
 S3_SILVER_PREFIX=02-silver/metricas/
+AWS_REGION=us-east-1
 JIRA_PROJECT=IFT
 JIRA_BASE_URL=https://sptech-infratech.atlassian.net
 JIRA_EMAIL=...
 JIRA_TOKEN=...
 SLACK_WEBHOOK=...
-DB_HOST=nome-do-container-mysql
-DB_DATABASE=infratech
-DB_USER=aluno
-DB_PASSWORD=...
 ALERTA_INTERVALO_SEGUNDOS=300
 ALERTA_JANELA_MINUTOS=10
 ALERTA_MIN_AMOSTRAS=7
 ALERTA_MAX_IDADE_MINUTOS=15
 EOF
-sudo chmod 600 /opt/infratech/alertas.env
+sudo chmod 600 /opt/infratech/infratech.env
 ```
 
-O MySQL precisa estar na mesma rede (`infratech-net`) e o `DB_HOST` deve casar com o nome/alias do
-container. Para subir/atualizar:
+Para subir/atualizar (comandos executados em `/opt/infratech`, onde está o
+compose copiado do repositório do site):
 
 ```bash
-docker pull seuusuario/infratech-alertas:1.0
-docker run -d --name infratech-alertas --network infratech-net \
-  --env-file /opt/infratech/alertas.env \
-  seuusuario/infratech-alertas:1.0
-
-docker logs -f infratech-alertas
+docker compose pull
+docker compose up -d --force-recreate
+docker compose logs -f alertas
 ```
+
+Não use `alertas.env` nem `docker run --env-file` separadamente: o compose já
+injeta o mesmo arquivo nos três serviços.
 
 ### ⚠️ Pré-requisitos e armadilhas
 
@@ -296,7 +303,7 @@ docker logs -f infratech-alertas
   os lotes.
 - As credenciais da AWS vêm da **IAM Role da EC2** (IMDSv2). Em container, a instância precisa de
   `HttpPutResponseHopLimit >= 2`, senão o SDK não alcança o `169.254.169.254`.
-- A região do S3 é fixa em `US_EAST_1` no código.
+- A região do S3 vem de `AWS_REGION` (padrão `us-east-1`); `AWS_DEFAULT_REGION` também é aceito pelo boto3.
 - Chamados antigos (criados antes das labels) não aparecem no filtro da dashboard; os novos
   começam já com `empresa-{id}`.
 - Se a leitura mais recente ficar com mais de `ALERTA_MAX_IDADE_MINUTOS` (15 min) em relação ao

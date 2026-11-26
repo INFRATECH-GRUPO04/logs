@@ -10,7 +10,7 @@ import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 public class S3Provider {
     public S3Client getS3Client() {
         return S3Client.builder()
-                .region(Region.US_EAST_1)
+                .region(Region.of(System.getenv().getOrDefault("AWS_REGION", "us-east-1")))
                 .credentialsProvider(DefaultCredentialsProvider.create())
                 .build();
     }
